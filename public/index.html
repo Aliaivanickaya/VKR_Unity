@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Geo Pipeline</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            display: flex;
+            height: 100vh;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        #sidebar {
+            width: 280px;
+            min-width: 280px;
+            padding: 16px;
+            background: #f5f5f5;
+            border-right: 1px solid #ccc;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow-y: auto;
+        }
+
+        h2 {
+            font-size: 14px;
+        }
+
+        #bbox-info {
+            background: #fff;
+            border: 1px solid #ccc;
+            padding: 8px;
+            line-height: 1.8;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        select,
+        button {
+            width: 100%;
+            padding: 6px;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        button {
+            background: #222;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background: #999;
+            cursor: not-allowed;
+        }
+
+        button:hover:not(:disabled) {
+            background: #444;
+        }
+
+        #status {
+            color: #555;
+            min-height: 18px;
+        }
+
+        #error {
+            color: red;
+            min-height: 18px;
+        }
+
+        #result {
+            display: none;
+        }
+
+        #result img {
+            width: 100%;
+            border: 1px solid #ccc;
+            margin-bottom: 4px;
+        }
+
+        #download-btn {
+            background: #1a7a1a;
+            margin-top: 4px;
+        }
+
+        #map {
+            flex: 1;
+        }
+
+    </style>
+</head>
+
+<body>
+
+    <div id="sidebar">
+        <h2>Получение спутникового снимка и карты высот</h2>
+
+        <div>
+            <label>Область (выделить на карте):</label>
+            <div id="bbox-info">не выбрана</div>
+        </div>
+
+        <div>
+            <label>Разрешение:</label>
+            <select id="resolution">
+                <option value="257">257×257</option>
+                <option value="513" selected>513×513</option>
+                <option value="1025">1025×1025</option>
+            </select>
+        </div>
+
+        <button id="gen-btn" disabled>Сгенерировать</button>
+
+        <div id="status"></div>
+        <div id="error"></div>
+
+        <div id="result">
+            <div>Карта высот:</div>
+            <img id="prev-height" src="">
+            <div>Спутниковый снимок:</div>
+            <img id="prev-texture" src="">
+            <a id="download-btn" href="#">
+                <button>Скачать ZIP</button>
+            </a>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script>
+        let bbox = null;
+
+        const map = L.map('map').setView([42.65, 21.36], 10);
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Esri World Imagery'
+        }).addTo(map);
+
+        const drawn = new L.FeatureGroup().addTo(map);
+        map.addControl(new L.Control.Draw({
+            draw: {
+                rectangle: true,
+                polyline: false,
+                polygon: false,
+                circle: false,
+                marker: false,
+                circlemarker: false
+            },
+            edit: {
+                featureGroup: drawn
+            }
+        }));
+
+        map.on(L.Draw.Event.CREATED, e => {
+            drawn.clearLayers();
+            drawn.addLayer(e.layer);
+            const b = e.layer.getBounds();
+            bbox = {
+                north: +b.getNorth().toFixed(6),
+                south: +b.getSouth().toFixed(6),
+                west: +b.getWest().toFixed(6),
+                east: +b.getEast().toFixed(6),
+            };
+            document.getElementById('bbox-info').innerHTML =
+                `N: ${bbox.north}<br>S: ${bbox.south}<br>W: ${bbox.west}<br>E: ${bbox.east}`;
+            document.getElementById('gen-btn').disabled = false;
+        });
+
+        document.getElementById('gen-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('gen-btn');
+            const status = document.getElementById('status');
+            const error = document.getElementById('error');
+            const result = document.getElementById('result');
+
+            btn.disabled = true;
+            error.textContent = '';
+            result.style.display = 'none';
+            status.textContent = 'Загрузка данных...';
+
+            try {
+                const res = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        bbox,
+                        resolution: parseInt(document.getElementById('resolution').value)
+                    })
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+
+                status.textContent = 'Готово.';
+                document.getElementById('prev-height').src = `/api/preview/${data.jobId}/height`;
+                document.getElementById('prev-texture').src = `/api/preview/${data.jobId}/texture`;
+                document.getElementById('download-btn').href = data.downloadUrl;
+                result.style.display = 'block';
+
+            } catch (err) {
+                status.textContent = '';
+                error.textContent = 'Ошибка: ' + err.message;
+                btn.disabled = false;
+            }
+        });
+
+    </script>
+<style>
+.leaflet-control-attribution {
+ display: none!important;
+ opacity: none!important;
+}
+</style>
+</body>
+</html>
